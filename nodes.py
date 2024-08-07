@@ -17,7 +17,7 @@ class Node():
 
     def compute_A(self, thickness):
         if self.number > 119:
-            print('problem nodes')
+            print('problem node')
         for i in self.neighbors:
             if i:
                 ds = np.sqrt((i.x - self.x) ** 2 + (i.y - self.y) ** 2)
