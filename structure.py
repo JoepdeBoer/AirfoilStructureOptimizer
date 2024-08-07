@@ -2,6 +2,7 @@ import numpy as np
 import importAirfoil.importAirfoil as importAirfoil
 import matplotlib.pyplot as plt
 from shapely import LinearRing, Polygon, LineString
+from nodes import Node
 
 
 class Airfoil:
@@ -15,28 +16,33 @@ class Airfoil:
         :param thickness: thickness of skin in [mm]
         :param spars: list of relative spar coordinates x/chord [-]
         :param chord: chord length in [m]
-        :param Load: [Vx, Vy, Tz] shear postive up and right Torque positive ccw [N, N, Nm]
+        :param Load: [Vx, Vy, Tz, Mx] shear postive up and right Torque positive ccw [N, N, Nm]
         :param n: number of nodes for per surface (top and bottom) total number is thus 2n
         """
-        self.file = filename
-        self.thickness = thickness
-        self.spar_thickness = thickness # TODO make spar thickness independent of skin-thickness
+
         self.G_skin = 27 * 10 ** 9  # [Pa] shear modulus
-        self.chord = chord
+        self.Ixx = 0.
+        self.Iyy = 0.
+        self.Ixy = 0.
+        self.file = filename
         self.Load = Load
+        self.thickness = thickness
+        self.spar_thickness = thickness  # TODO make spar thickness independent of skin-thickness
+        self.chord = chord
         self.x, self.y = self.loadpoints() * chord
         self.spars = self.createspars(spars)
-        # self.cells = self.createcells()
-        # self.qT, self.dtheta_dz_T = self.calc_qt()
-        self.n = n
         self.indx_lastspar = int(self.spars[-1][-1]) + 1
-        self.skin_geom = LineString(np.column_stack((self.x[-self.indx_lastspar:self.indx_lastspar],
-                                                     self.y[-self.indx_lastspar:self.indx_lastspar])))
+        self.structural_skin_x = self.x[-self.indx_lastspar:self.indx_lastspar] # assuming last spar is where aileron begins
+        self.structural_skin_y = self.y[-self.indx_lastspar:self.indx_lastspar]
+        self.perimeter = LineString(np.column_stack((self.structural_skin_x, self.structural_skin_y)))
         self.centroid = self.calculate_centriod()
         self.calculate_I()
-        # self.Ixx = None
-        # self.Iyy = None
-        # self.Ixy = None
+        self.skin_nodes = []
+        self.spar_nodes = []
+        self.create_nodes()
+        self.idealise()
+        self.cells = []
+        self.n = n
 
     def loadpoints(self):
         """ loads airfoil coordinates from file"""
@@ -62,7 +68,7 @@ class Airfoil:
             x2, y2 = self.x[indx2], self.y[indx2]
             x3, y3 = self.x[indx3], self.y[indx3]
             x4, y4 = self.x[indx4], self.y[indx4]
-            ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1
+            ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1 # linear interpolation to find lower location of spar
             ymax = (y4 - y3) / (x4 - x3) * (x - x3) + y3
             spargeom[i] = [x, ymin, ymax, indx1]
 
@@ -74,8 +80,6 @@ class Airfoil:
             ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1
             ymax = (y4 - y3) / (x4 - x3) * (x - x3) + y3
             spargeom[i] = [x, ymin, ymax, indx1]
-            print(indx1)
-
         return spargeom
 
     def createcells(self):
@@ -148,26 +152,93 @@ class Airfoil:
         return qt[:-1], qt[-1]
 
     def create_nodes(self):
-        pass
+        n = 0
+        sparconnected = []
+        x_c = self.structural_skin_x - self.centroid[0]  # coordinates w.r.t. centroid
+        y_c = self.structural_skin_y - self.centroid[1]
+        for i, x in enumerate(x_c):
+            node = Node(x, y_c[i], n)
+            if self.skin_nodes:
+                node.neighbors[0] = self.skin_nodes[i-1]
+                self.skin_nodes[i-1].neighbors[1] = node
+            self.skin_nodes.append(node)
+            if self.structural_skin_x[i] in self.spars[:,0]:
+                sparconnected.append(node)
+            n += 1
+
+        for i, spar in enumerate(self.spars):
+            sparlist = []
+            x = spar[0] - self.centroid[0]
+            ytop = spar[2] - self.centroid[1] - self.sparresolution
+            ybot = spar[1] - self.centroid[1] + self.sparresolution
+            n = int((ytop-ybot)//self.sparresolution + 1)
+            ys = np.linspace(ybot, ytop, n, endpoint=True)
+            for j, y in enumerate(ys):
+                node = Node(x, y, n)
+                if sparlist and y != ybot:
+                    node.neighbors[0] = sparlist[i-1]
+                    sparlist[i-1].neighbors[1] = node
+                sparlist.append(node)
+                n += 1
+            self.spar_nodes.append(sparlist)
+
+        self.n = n
+        sparconnected[0].neighbors[2] = self.spar_nodes[-1][-1]
+        sparconnected[1].neighbors[2] = self.spar_nodes[-1][0]
+        sparconnected[2].neighbors[2] = self.spar_nodes[0][-1]
+        sparconnected[3].neighbors[2] = self.spar_nodes[0][-1]
+        self.spar_nodes[-1][-1].neighbors[1] = sparconnected[0]
+        self.spar_nodes[-1][0].neighbors[0] = sparconnected[1]
+        self.spar_nodes[0][-1].neighbors[1] = sparconnected[2]
+        self.spar_nodes[0][0].neighbors[0] = sparconnected[3]
+
+    def idealise(self):
+        '''
+        Compute the skin contribution to node areas based on the normal stress
+        And calculate the shear flow jump over the nodes
+        '''
+
+        for node in self.skin_nodes:
+            node.normalstressfactor = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x
+        for sparlist in  self.spar_nodes:
+            for node in sparlist:
+                node.normalstressfactor = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x
+        for node in self.skin_nodes:
+            node.compute_A(self.thickness)
+            if node.A < 0:
+                print("skin nodes" , node.number, node.A, node.dqs, node.x+self.centroid[0], node.y+self.centroid[1])
+            node.compute_dqs(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
+        for sparlist in self.spar_nodes:
+            for node in sparlist:
+                node.compute_A(self.thickness) # TODO Could vary spar thickness
+                if node.A < 0:
+                    print("spar nodes", node.number, node.A, node.dqs, node.x+self.centroid[0], node.y)
+                node.compute_dqs(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
+                # print('spar nodes', node.A, node.dqs)
+
+
+
     def calculate_I(self):
         """calculate Ixx, Iyy, Ixy, of the section
         """
-        self.Ixx = 0
-        self.Iyy = 0
-        self.Ixy = 0
-        xs = self.x[-self.indx_lastspar:self.indx_lastspar] - self.centroid[0]
-        ys = self.y[-self.indx_lastspar:self.indx_lastspar] - self.centroid[1]
+        xs = self.structural_skin_x - self.centroid[0]
+        ys = self.structural_skin_y - self.centroid[1]
         for i, _ in enumerate(xs):
             x1 = xs[i]
-            x2 = xs[i+1]
             y1 = ys[i]
-            y2 = ys[i+1]
-            yc = (ys[i] + ys[i+1]) / 2
-            xc = (xs[i] + xs[i+1]) / 2
+            if i < len(xs) - 1:
+                x2 = xs[i+1]
+                y2 = ys[i+1]
+                yc = (ys[i] + ys[i+1]) / 2
+                xc = (xs[i] + xs[i+1]) / 2
+            else:
+                x2 = xs[0]
+                y2 = ys[0]
+                yc = (ys[i] + ys[0]) / 2
+                xc = (xs[i] + xs[0]) / 2
             ds = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
             dA = ds * self.thickness
-            yoverx = (y1 - y2) / (x1 - x2)
-            beta = np.arctan(yoverx) * 180 / np.pi
+            beta = np.arctan2(y1 - y2, x1 - x2)
             self.Ixx += ds**3 * self.thickness * np.sin(beta)**2 / 12 + dA * yc**2
             self.Iyy += ds**3 * self.thickness * np.cos(beta)**2 / 12 + dA * xc**2
             self.Ixy += ds**3 * self.thickness * np.sin(beta) * np.cos(beta) / 12 + dA * xc * yc
@@ -188,10 +259,11 @@ class Airfoil:
         calculate the centroid of the structural section bounded by the last spar
         :return:
         """
-        skincentroid = np.array(self.skin_geom.centroid.coords.xy)
-        skinarea = self.skin_geom.length * self.thickness
-        spar_centroids =np.zeros((len(self.spars), 3))
-        for i, s in enumerate(self.spars):
+        xy = self.perimeter.centroid.coords.xy
+        skincentroid = np.array([xy[0][0], xy[1][0]])
+        skinarea = self.perimeter.length * self.thickness
+        spar_centroids = np.zeros((len(self.spars) - 1, 3))
+        for i, s in enumerate(spar_centroids): # last spar is already calculated in skin centroid
             spar_lenght = s[2] - s[1]
             spar_y = s[1] + spar_lenght / 2
             spar_area = spar_lenght * self.spar_thickness
@@ -201,107 +273,9 @@ class Airfoil:
 
         return centroid
 
-
-
-class cell():
-    def __init__(self, skin_sections: list, spars: list, skin_thickness: float, spar_thickness: list):
-
-        self.skin_sections = skin_sections
-        self.spars = spars
-        self.skin_thickness = skin_thickness
-        self.spar_thickness = spar_thickness
-        self.polygon, self.ring = self.make_polygon()
-        self.perimeter = self.ring.length
-        self.area = self.polygon.area
-        self.spar_perimeter = [i[2] - i[1] for i in self.spars]
-        self.skinperimeter = self.perimeter - np.sum(self.spar_perimeter)
-        self.sections = None
-        self.nodes = None
-
-        # print('cell created with area', self.area)
-        # print('Total perimeter', self.perimeter)
-        # print('Spar perimeter', self.spar_perimeter)
-        # print('Skin perimeter', self.skinperimeter)
-
-
-    def make_polygon(self):
-        print(f'amount of sections {len(self.skin_sections)}')
-        if len(self.skin_sections) == 1:
-            return Polygon(*self.skin_sections), LinearRing(*self.skin_sections)
-        else:
-            return Polygon(np.stack(self.skin_sections, axis=0).reshape((-1, 2))),LinearRing(np.stack(self.skin_sections, axis=0).reshape((-1, 2)))
-
-
-    def make_sections(self, spar_resolution):
-        self.sections = []
-        for i, coord1 in enumerate(self.skin_sections[0]):
-            if i != len(self.skin_sections[0]) - 1:
-                coord2 = self.skin_sections[0][i+1]
-                self.sections.append(section(coord1[0], coord1[1], coord2[0], coord2[1], self.skin_thickness))
-
-        x = self.spars[0][0]
-        lenght = self.spars[0][2] - self.spars[0][1]
-        n = lenght // spar_resolution + 1
-        ys = np.linspace(self.spars[0][1], self.spars[0][2], n, endpoint=True)
-        for j,y in enumerate(ys):
-            if j != len(ys) - 1:
-                self.sections.append(section(x, y, x, ys[j+1], self.spar_thickness[0]))
-
-        if len(self.spars) > 0:
-            #sections bottom skin
-            for k, coord1 in self.skin_sections[-1]:
-                if k != len(self.skin_sections[-1]) - 1:
-                    coord2 = self.skin_sections[-1][k + 1]
-                    self.sections.append(section(coord1[0], coord1[1], coord2[0], coord2[1], self.skin_thickness))
-            #sections right Spar
-            x = self.spars[1][0]
-            n = lenght // spar_resolution + 1
-            ys = np.linspace(self.spars[0][1], self.spars[0][2], n, endpoint=True)
-            for l, y in enumerate(ys):
-                if l != len(ys) - 1:
-                    self.sections.append(section(x, y, x, ys[l + 1], self.spar_thickness[0]))
-    def make_nodes(self):
-        """
-        loop through sections
-        calculate ds
-        create nodes
-        calculate centroid
-        add xprime and yprime
-        compute Ixx, Iyy, Ixy total cell
-
-
-        :return:
-        """
-        for i, section in enumerate(self.sections):
-            if i < len(self.sections) - 1:
-                area = 0.5 * section.Aeq + 0.5 * self.sections[i + 1].Aeq
-                x, y = section.x2, section.y2
-            else:
-                area = 0.5 * section.Aeq + 0.5 * self.sections[0].Aeq
-                x, y = self.section[0].x1, self.section.y1
-        pass
-
-class node():
-    def __init__(self, x, y, xprime, yprime, A):
-        self.x = x # x location in airfoil coordinates
-        self.y = y # y location in airfoil coordinates
-        self.A = A # Area of the node
-        self.Ixx = self.A * yprime**2
-        self.Iyy = self.A * xprime**2
-        self.Ixy = self.A * xprime * yprime
-        self.dqs =  None# jump in shear flow over this node
-        self.qs  = None # shear flow due to shear forces on the section ending at this node ccw
-    def compute_dqs(self, Ixx, Iyy, Ixy, Vx, Vy):
-        pass
-class section():
-    def __init__(self, x1, y1, x2, y2, thickness):
-        self.x1 = x1
-        self.y1 = y1
-        self.x2 = x2
-        self.y2 = y2
-        self.s = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-        self.Aeq = self.s * thickness # We assume 0 thickness skin after idealisation
-
-
 if __name__ == "__main__":
-    airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.5], 1, [0.1, 1, 1])
+    airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.5], 1, [1, 1, 1, 1])
+    print(f'airfoil centroid {airfoil.centroid}')
+    print(f'airfoil Ixx {airfoil.Ixx}')
+    print(f'airfoil Iyy {airfoil.Iyy}')
+    print(f'airfoil Ixy {airfoil.Ixy}')
