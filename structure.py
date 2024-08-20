@@ -3,10 +3,12 @@ import importAirfoil.importAirfoil as importAirfoil
 import matplotlib.pyplot as plt
 from shapely import LinearRing, Polygon, LineString
 from nodes import Node
+from cells import Cell
+from cells2 import Cell2
 
 
 class Airfoil:
-    sparresolution = 1e-3  # [m]resolution
+    sparresolution = .005# [m]resolution
     """ creates idealises thin walled structure"
          from lednicer formatted airfoil cooridinates"""
 
@@ -41,16 +43,12 @@ class Airfoil:
         self.spar_nodes = []
         self.create_nodes()
         self.idealise()
-        self.cells = []
+        self.cells = self.create_cells2()
         self.n = n
 
     def loadpoints(self):
         """ loads airfoil coordinates from file"""
         points = np.array(importAirfoil(self.file))
-        plt.plot(points[0], points[1])
-        plt.scatter(points[0], points[1])
-        plt.axis('equal')
-        plt.show()
         return points
 
     def createspars(self, spars):
@@ -71,6 +69,7 @@ class Airfoil:
             ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1 # linear interpolation to find lower location of spar
             ymax = (y4 - y3) / (x4 - x3) * (x - x3) + y3
             spargeom[i] = [x, ymin, ymax, indx1]
+            print(indx1)
 
             # shifting the points on the airfoil to match spar position
             self.x[indx1] = x
@@ -82,39 +81,67 @@ class Airfoil:
             spargeom[i] = [x, ymin, ymax, indx1]
         return spargeom
 
-    def createcells(self):
-        cells = {}
-        for i, x in enumerate(self.spars):
-            indx = int(x[3])
-            cellcount = 1
-            if i == 0:
-                #first cell
-                dsection_y = self.y[-indx - 1:indx + 1]
-                dsection_x = self.x[-indx - 1:indx + 1]
-                skin = np.column_stack((dsection_x, dsection_y))
-                cells[f'cell_{cellcount}'] = cell([skin], [x], [self.thickness], [self.thickness]) # TODO add diffrent thicknesses
-                cellcount += 1
-                plt.plot(dsection_x, dsection_y, color='pink')
-                plt.plot([x[0], x[0]], [x[1], x[2]], color='blue')
-                plt.show()
+    # def createcells(self):
+    #     cells = {}
+    #     for i, x in enumerate(self.spars):
+    #         indx = int(x[3])
+    #         cellcount = 1
+    #         if i == 0:
+    #             #first cell
+    #             dsection_y = self.y[-indx - 1:indx + 1]
+    #             dsection_x = self.x[-indx - 1:indx + 1]
+    #             skin = np.column_stack((dsection_x, dsection_y))
+    #             cells[f'cell_{cellcount}'] = Cell([skin], [x], [self.thickness], [self.thickness]) # TODO add diffrent thicknesses
+    #             cellcount += 1
+    #             plt.plot(dsection_x, dsection_y, color='pink')
+    #             plt.plot([x[0], x[0]], [x[1], x[2]], color='blue')
+    #             plt.show()
+    #
+    #         if i < len(self.spars) - 1:
+    #             #middle cells
+    #             spar2 = self.spars[i + 1]
+    #             indx2 = int(spar2[3])
+    #             bottom = np.column_stack((self.x[indx:indx2 + 1], self.y[indx:indx2 + 1]))
+    #             top = np.column_stack((self.x[-indx2 - 1:-indx], self.y[-indx2 - 1:-indx]))
+    #             cells[f'cell_{cellcount}'] = Cell([top, bottom], [x, spar2], [self.thickness, self.thickness], [self.thickness, self.thickness])
+    #             cellcount += 1
+    #             plt.plot(top[:, 0], top[:, 1], color='pink')
+    #             plt.plot([x[0], x[0]], [x[1], x[2]], color='blue')
+    #             plt.plot(bottom[:, 0], bottom[:, 1], color='pink')
+    #             plt.plot([spar2[0], spar2[0]], [spar2[1], spar2[2]], color='red')
+    #             plt.show()
+    #     # for i in cells.values():
+    #     #     i.make_sections(self.sparresolution)
+    #
+    #     return cells
 
-            if i < len(self.spars) - 1:
-                #middle cells
-                spar2 = self.spars[i + 1]
-                indx2 = int(spar2[3])
-                bottom = np.column_stack((self.x[indx:indx2 + 1], self.y[indx:indx2 + 1]))
-                top = np.column_stack((self.x[-indx2 - 1:-indx], self.y[-indx2 - 1:-indx]))
-                cells[f'cell_{cellcount}'] = cell([top, bottom], [x, spar2], [self.thickness, self.thickness], [self.thickness, self.thickness])
-                cellcount += 1
-                plt.plot(top[:, 0], top[:, 1], color='pink')
-                plt.plot([x[0], x[0]], [x[1], x[2]], color='blue')
-                plt.plot(bottom[:, 0], bottom[:, 1], color='pink')
-                plt.plot([spar2[0], spar2[0]], [spar2[1], spar2[2]], color='red')
-                plt.show()
-        for i in cells.values():
-            i.make_sections(self.sparresolution)
+    def create_cells2(self):
+        cells = dict()
+        indx1 = int(self.spars[0][3]) - (len(self.x) - len(self.skin_nodes))//2
+        indx2 = int(self.spars[-1][3]) - (len(self.x) - len(self.skin_nodes))//2
+        # first cell
+        skin_nodes = self.skin_nodes[-indx1 -1: indx1 +1]
+        spar_nodes = self.spar_nodes[0]
+        nodes =  skin_nodes + spar_nodes
+        cells[f'cell_1'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin)
 
-        return cells
+        # middle cell
+        skin_nodes = self.skin_nodes[-indx2 - 1: indx2 + 1]
+        spar_nodes = self.spar_nodes[-1]
+        nodes = skin_nodes + spar_nodes
+        cells[f'cell_2'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin)
+
+        # x = []
+        # y = []
+        # for node in cells['cell_2'].nodes:
+        #     x.append(node.x)
+        #     y.append(node.y)
+        # plt.scatter(x, y, color='pink')
+        # plt.show()
+        # return cells
+
+
+
 
     def calc_qt(self):
         """
@@ -168,29 +195,44 @@ class Airfoil:
 
         for i, spar in enumerate(self.spars):
             sparlist = []
-            x = spar[0] - self.centroid[0]
+            xspar = spar[0] - self.centroid[0]
             ytop = spar[2] - self.centroid[1] - self.sparresolution
             ybot = spar[1] - self.centroid[1] + self.sparresolution
-            n = int((ytop-ybot)//self.sparresolution + 1)
-            ys = np.linspace(ybot, ytop, n, endpoint=True)
+            number = int((ytop-ybot)//self.sparresolution + 1)
+            if number < 2:
+                number = 2
+            ys = np.linspace(ybot, ytop, number, endpoint=True)
             for j, y in enumerate(ys):
-                node = Node(x, y, n)
+                node = Node(xspar, y, n)
                 if sparlist and y != ybot:
                     node.neighbors[0] = sparlist[i-1]
                     sparlist[i-1].neighbors[1] = node
                 sparlist.append(node)
                 n += 1
+
             self.spar_nodes.append(sparlist)
 
         self.n = n
-        sparconnected[0].neighbors[2] = self.spar_nodes[-1][-1]
-        sparconnected[1].neighbors[2] = self.spar_nodes[-1][0]
-        sparconnected[2].neighbors[2] = self.spar_nodes[0][-1]
-        sparconnected[3].neighbors[2] = self.spar_nodes[0][-1]
-        self.spar_nodes[-1][-1].neighbors[1] = sparconnected[0]
-        self.spar_nodes[-1][0].neighbors[0] = sparconnected[1]
-        self.spar_nodes[0][-1].neighbors[1] = sparconnected[2]
-        self.spar_nodes[0][0].neighbors[0] = sparconnected[3]
+        sparconnected[0].neighbors[2] = self.spar_nodes[1][-1]
+        sparconnected[1].neighbors[2] = self.spar_nodes[0][-1]
+        sparconnected[2].neighbors[2] = self.spar_nodes[0][0]
+        sparconnected[3].neighbors[2] = self.spar_nodes[1][0]
+        self.spar_nodes[1][-1].neighbors[1] = sparconnected[0]
+        self.spar_nodes[1][0].neighbors[0] = sparconnected[3]
+        self.spar_nodes[0][-1].neighbors[1] = sparconnected[1]
+        self.spar_nodes[0][0].neighbors[0] = sparconnected[2]
+
+        # plt.scatter(self.x- self.centroid[0], self.y - self.centroid[1], c='black')
+        # plt.scatter(sparconnected[0].x, sparconnected[0].y, c='purple')
+        # plt.scatter(sparconnected[1].x, sparconnected[1].y, c='pink')
+        # plt.scatter(sparconnected[2].x, sparconnected[2].y, c='red')
+        # plt.scatter(sparconnected[3].x, sparconnected[3].y, c='orange')
+        # plt.scatter(self.spar_nodes[1][-1].x, self.spar_nodes[1][-1].y, c='purple')
+        # plt.scatter(self.spar_nodes[0][-1].x, self.spar_nodes[0][-1].y, c='pink')
+        # plt.scatter(self.spar_nodes[0][0].x, self.spar_nodes[0][0].y, c='red')
+        # plt.scatter(self.spar_nodes[1][0].x, self.spar_nodes[1][0].y, c='orange')
+        # plt.axis('equal')
+        # plt.show()
 
     def idealise(self):
         '''
@@ -199,22 +241,23 @@ class Airfoil:
         '''
 
         for node in self.skin_nodes:
-            node.normalstressfactor = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x
+            node.sigmaz = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x /(self.Ixx * self.Iyy - self.Ixy ** 2)
         for sparlist in  self.spar_nodes:
             for node in sparlist:
-                node.normalstressfactor = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x
+                node.sigmaz = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x /(self.Ixx * self.Iyy - self.Ixy ** 2)
         for node in self.skin_nodes:
             node.compute_A(self.thickness)
+            node.compute_dqb(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
             if node.A < 0:
-                print("skin nodes" , node.number, node.A, node.dqs, node.x+self.centroid[0], node.y+self.centroid[1])
-            node.compute_dqs(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
+                print("skin nodes" , node.number, node.A, node.neighbors)
         for sparlist in self.spar_nodes:
             for node in sparlist:
                 node.compute_A(self.thickness) # TODO Could vary spar thickness
+                node.compute_dqb(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
                 if node.A < 0:
-                    print("spar nodes", node.number, node.A, node.dqs, node.x+self.centroid[0], node.y)
-                node.compute_dqs(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
-                # print('spar nodes', node.A, node.dqs)
+                    print("spar nodes", node.number, node.A, node.dqb, node.x+self.centroid[0], node.y)
+
+                # print('spar nodes', node.A, node.dqb)
 
 
 
@@ -274,7 +317,7 @@ class Airfoil:
         return centroid
 
 if __name__ == "__main__":
-    airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.5], 1, [1, 1, 1, 1])
+    airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.8], 1, [1, 1, 1, 1])
     print(f'airfoil centroid {airfoil.centroid}')
     print(f'airfoil Ixx {airfoil.Ixx}')
     print(f'airfoil Iyy {airfoil.Iyy}')
