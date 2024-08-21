@@ -13,6 +13,8 @@ class Cell2():
         self.area = self.polygon.area
         print('cell created with area', self.area)
         print('Total perimeter', self.perimeter)
+        for edge in self.edges:
+            print(edge.qbase)
 
 
         # self.spar_perimeter = [i[2] - i[1] for i in self.spars]

@@ -18,7 +18,7 @@ class Airfoil:
         :param thickness: thickness of skin in [mm]
         :param spars: list of relative spar coordinates x/chord [-]
         :param chord: chord length in [m]
-        :param Load: [Vx, Vy, Tz, Mx] shear postive up and right Torque positive ccw [N, N, Nm]
+        :param Load: [Vx, Vy, Tz, Mx] shear postive up and right Torque positive ccw [N, N, Nm] forces applied at (0,0)
         :param n: number of nodes for per surface (top and bottom) total number is thus 2n
         """
 
@@ -130,6 +130,8 @@ class Airfoil:
         spar_nodes = self.spar_nodes[-1]
         nodes = skin_nodes + spar_nodes
         cells[f'cell_2'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin)
+
+        return cells
 
         # x = []
         # y = []
@@ -316,9 +318,69 @@ class Airfoil:
 
         return centroid
 
+    def solve_shear(self):
+        # based on dz/dthetha is same for each cell (no warping)
+        # and Moment equavalance of shear forces with internal shearflow
+        Amat = np.zeros((3, 3))
+        Amat[:-1, -1] = -1
+        A1 = self.cells['cell_1'].area
+        A2 = self.cells['cell_2'].area
+
+        I1 = 0
+        I2 = 0
+        Mx1 = 0
+        Mx2 = 0
+        # Cell1 circle integral of qb / tG ds
+        for edge in self.cells['cell_1'].edges:
+            I1 += edge.qbase * edge.s / self.thickness / self.G_skin
+        # Cell2 circle integral of qb / tG ds
+        for edge in self.cells['cell_2'].edges:
+            I2 += edge.qbase * edge.s / self.thickness / self.G_skin
+        I1 /= 2 * A1
+        I2 /= 2 * A2
+
+
+        # lengths of sections
+        Lspar1 = self.spars[0][2] - self.spars[0][1]
+        Lspar2 = self.spars[1][2] - self.spars[1][1]
+        Lskin1 = self.cells['cell_1'].perimeter - Lspar1
+        Lskin2 = self.cells['cell_2'].perimeter - Lspar2 - Lspar1
+
+        Amat[0, :-1] = np.array([Lskin1 + Lspar1, -Lspar1])/A1/2/self.thickness/self.G_skin
+        Amat[1, :-1] = np.array([-Lspar1, Lskin2 + Lspar2 + Lspar1 ])/A2/2/self.thickness/self.G_skin
+        Amat[2, :-1] = 2*A1, 2*A2
+
+        # moments due to base shearflow
+        for edge in self.cells['cell_1'].edges:
+            Mx1 += edge.moment
+        skip = False
+        firstspar = True
+        for i, edge in enumerate(self.cells['cell_2'].edges):
+            if edge.node2.neighbors[2] and skip==False and firstspar:
+                skip = True
+                continue
+            elif edge.node2.neighbors[2] and firstspar:
+                skip = False
+                firstspar = False
+                continue
+            if skip:
+                continue
+            Mx2 += edge.moment
+
+        shear_induced_moment = self.Load[0] * self.centroid[1] - self.Load[1] * self.centroid[0] # ccw positive
+        Mbase = Mx1 + Mx2
+        b = np.array([-I1, -I2, shear_induced_moment - Mbase])
+
+        # solve for qs dthetha/dz
+        self.qs = np.linalg.solve(Amat, b)
+        print(self.qs)
+
+
+
 if __name__ == "__main__":
     airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.8], 1, [1, 1, 1, 1])
     print(f'airfoil centroid {airfoil.centroid}')
     print(f'airfoil Ixx {airfoil.Ixx}')
     print(f'airfoil Iyy {airfoil.Iyy}')
     print(f'airfoil Ixy {airfoil.Ixy}')
+    airfoil.solve_shear()
