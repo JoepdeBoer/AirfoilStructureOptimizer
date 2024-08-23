@@ -8,7 +8,7 @@ from cells2 import Cell2
 
 
 class Airfoil:
-    sparresolution = .005# [m]resolution
+    sparresolution = .01# [m]resolution
     """ creates idealises thin walled structure"
          from lednicer formatted airfoil cooridinates"""
 
@@ -69,7 +69,6 @@ class Airfoil:
             ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1 # linear interpolation to find lower location of spar
             ymax = (y4 - y3) / (x4 - x3) * (x - x3) + y3
             spargeom[i] = [x, ymin, ymax, indx1]
-            print(indx1)
 
             # shifting the points on the airfoil to match spar position
             self.x[indx1] = x
@@ -123,24 +122,32 @@ class Airfoil:
         skin_nodes = self.skin_nodes[-indx1 -1: indx1 +1]
         spar_nodes = self.spar_nodes[0]
         nodes =  skin_nodes + spar_nodes
-        cells[f'cell_1'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin)
+        cells[f'cell_1'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin, number=1)
 
         # middle cell
-        skin_nodes = self.skin_nodes[-indx2 - 1: indx2 + 1]
-        spar_nodes = self.spar_nodes[-1]
-        nodes = skin_nodes + spar_nodes
-        cells[f'cell_2'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin)
+        top_skin_nodes = self.skin_nodes[0: -indx1]
+        bottom_skin_nodes = self.skin_nodes[indx1:]
+        nodes = top_skin_nodes + self.spar_nodes[0][::-1] + bottom_skin_nodes + self.spar_nodes[1] # fliped direction of spar for ccw direction
+        cells[f'cell_2'] = Cell2(nodes, self.centroid, self.thickness, self.G_skin, number=2)
 
-        return cells
 
         # x = []
         # y = []
+        # c = []
         # for node in cells['cell_2'].nodes:
+        #     print(node.number)
+        #     if node in top_skin_nodes:
+        #         c.append('pink')
+        #     elif node in bottom_skin_nodes:
+        #         c.append('blue')
+        #     else:
+        #         print(f'{node.x}, {node.y}')
+        #         c.append('red')
         #     x.append(node.x)
         #     y.append(node.y)
-        # plt.scatter(x, y, color='pink')
+        # plt.scatter(x, y, color=c)
         # plt.show()
-        # return cells
+        return cells
 
 
 
@@ -154,31 +161,20 @@ class Airfoil:
         x = np.zeros((len(self.cells) + 1, 1))
         x[-1] = self.Load[2]  # Torque
         A[-1:-1] = 0
+        spar1perimeter = self.spars[0][2] - self.spars[0][1]
 
-        for i, region in enumerate(self.cells.values()):
-            if i == 0:
-                A[0, 0] = (1 / 2 / region.area / self.thickness / self.G_skin * region.skinperimeter
-                           + 1 / 2 / region.area / self.thickness / self.G_skin * region.spar_perimeter[
-                               -1])  # TODO add G_spar and tspar as parameters
-                A[0, 1] = -1 / 2 / region.area / self.thickness / self.G_skin * region.spar_perimeter[
-                    -1]  # TODO add G_spar and tspar as parameters
-            else:
-                A[i, i] = (
-                            1 / 2 / region.area / self.thickness / self.G_skin * region.skinperimeter  # TODO add G_skin_top/bottom and tskin_top/bottom as parameters
-                            + 1 / 2 / region.area / self.thickness / self.G_skin * region.spar_perimeter[
-                                0]  # TODO add G_spar1 and tspar1 as parameters
-                            + 1 / 2 / region.area / self.thickness / self.G_skin * region.spar_perimeter[
-                                -1])  # TODO add G_spar2 and tspar2 as parameters
-                A[i, i + 1] = -1 / 2 / region.area / self.thickness / self.G_skin * region.spar_perimeter[
-                    -1]  # TODO add G_spar2 and tspar2 as parameters
-                A[i, i - 1] = -1 / 2 / region.area / self.thickness / self.G_skin * region.spar_perimeter[
-                    0]  # TODO add G_spar1 and tspar1 as parameters
-
-            A[i, -1] += -1
-            A[-1, i] += 2 * region.area
+        A[0, 0] = 1 / 2 / self.cells['cell_1'].area / self.thickness / self.G_skin * self.cells['cell_1'].perimeter
+        A[0, 1] = -1 / 2 / self.cells['cell_1'].area / self.thickness / self.G_skin * spar1perimeter
+        A[0, 2] = -1
+        A[1, 0] = -1 / 2 / self.cells['cell_2'].area / self.thickness / self.G_skin * spar1perimeter
+        A[1, 1] = 1 / 2 / self.cells['cell_2'].area / self.thickness / self.G_skin * self.cells['cell_2'].perimeter
+        A[1, 2] = -1
+        A[2, 0] = 2 * self.cells['cell_1'].area
+        A[2, 1] = 2 * self.cells['cell_2'].area
+        A[2, 2] = 0
 
         qt = np.linalg.solve(A, x)  # last element is dtheta/dz
-        return qt[:-1], qt[-1]
+        return qt
 
     def create_nodes(self):
         n = 0
@@ -357,8 +353,8 @@ class Airfoil:
         firstspar = True
         for i, edge in enumerate(self.cells['cell_2'].edges):
             if edge.node2.neighbors[2] and skip==False and firstspar:
+                Mx2 += edge.moment
                 skip = True
-                continue
             elif edge.node2.neighbors[2] and firstspar:
                 skip = False
                 firstspar = False
@@ -372,15 +368,66 @@ class Airfoil:
         b = np.array([-I1, -I2, shear_induced_moment - Mbase])
 
         # solve for qs dthetha/dz
-        self.qs = np.linalg.solve(Amat, b)
-        print(self.qs)
+        qs = np.linalg.solve(Amat, b)
+        qs1 = qs[0]
+        qs2 = qs[1]
+        dthetha = qs[2]
+        spar1 = False
+        for edge in self.cells['cell_1'].edges:
+            edge.qs0 += qs1
+            if edge.is_spar == 1:
+                edge.qs0 -= qs2
+                edge.qtotal = edge.qs0 + edge.qbase
+                # print(
+                #     f'{edge.node1.number} - {edge.node2.number} qb = {edge.qbase} qs = {edge.qs0} qtotal = {edge.qtotal}')
+            else:
+                edge.qtotal = edge.qs0 + edge.qbase
+        for edge in self.cells['cell_2'].edges:
+            edge.qs0 += qs2
+            if edge.is_spar == 1:
+                edge.qs0 -= qs1
+                edge.qtotal = edge.qs0 + edge.qbase
+                # print(
+                #     f'{edge.node1.number} - {edge.node2.number} qb = {edge.qbase} qs = {edge.qs0} qtotal = {edge.qtotal}')
+            else:
+                edge.qtotal = edge.qs0 + edge.qbase
+    def find_max_shear_flow(self):
+        self.solve_shear()
+        qt1, qt2, _ = self.calc_qt()
+
+        max_shear_flow = 0
+        limiting_edge = None
+        limiting_cell = None
+        for edge in self.cells['cell_1'].edges:
+            edge.qtotal += qt1
+            if edge.is_spar == 1:
+                edge.qtotal -= qt2
+            if abs(edge.qtotal) > abs(max_shear_flow):
+                max_shear_flow = edge.qtotal
+                limiting_edge = edge
+                limiting_cell = 1
+        for edge in self.cells['cell_2'].edges:
+            edge.qtotal += qt2
+            if edge.is_spar == 1:
+                edge.qtotal -= qt1
+            if abs(edge.qtotal) > abs(max_shear_flow):
+                max_shear_flow = edge.qtotal
+                limiting_edge = edge
+                limiting_cell = 2
+        print(f'max_shear_flow = {max_shear_flow}')
+        print(f'limiting_edge = {limiting_edge.node1.number} - {limiting_edge.node2.number} cell = {limiting_cell}')
+        return max_shear_flow
+
+
+
 
 
 
 if __name__ == "__main__":
-    airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.8], 1, [1, 1, 1, 1])
-    print(f'airfoil centroid {airfoil.centroid}')
-    print(f'airfoil Ixx {airfoil.Ixx}')
-    print(f'airfoil Iyy {airfoil.Iyy}')
-    print(f'airfoil Ixy {airfoil.Ixy}')
-    airfoil.solve_shear()
+    airfoil = Airfoil("NACA012.txt", 0.3, [0.4, 0.8], 1, [0, 10, 0, 10])
+    #airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.8], 1, [1, 1, 1, 1])
+    # print(f'airfoil centroid {airfoil.centroid}')
+    # print(f'airfoil Ixx {airfoil.Ixx}')
+    # print(f'airfoil Iyy {airfoil.Iyy}')
+    # print(f'airfoil Ixy {airfoil.Ixy}')
+    airfoil.find_max_shear_flow()

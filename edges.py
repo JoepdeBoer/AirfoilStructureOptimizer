@@ -13,9 +13,10 @@ class Edge():
         self.ymid = (self.y1 + self.y2) / 2
         self.qbase = qbase
         self.moment = self.momentccw(centroid)
-        self.qs0 = None
+        self.qs0 = 0
         self.qtotal = None
         self.stress = None
+        self.is_spar = 0 # 0 is skin, 1 is spar1, 2 is spar2
 
 
     def momentccw(self, centroid):
