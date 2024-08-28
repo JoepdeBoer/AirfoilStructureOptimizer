@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from shapely import LinearRing, Polygon
+from shapely import LinearRing, Polygon, plotting
 from edges import Edge
 class Cell2():
     def __init__(self, nodes: list, centroid: list, skin_thickness: float, G: float, number: int = 0):

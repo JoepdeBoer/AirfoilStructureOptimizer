@@ -1,26 +1,34 @@
 import numpy as np
 import importAirfoil.importAirfoil as importAirfoil
 import matplotlib.pyplot as plt
-from shapely import LinearRing, Polygon, LineString
+from shapely import LinearRing, Polygon, LineString, plotting
 from nodes import Node
 from cells import Cell
 from cells2 import Cell2
 
 
 class Airfoil:
-    sparresolution = .01# [m]resolution
+    sparresolution = .03# [m]resolution
     """ creates idealises thin walled structure"
          from lednicer formatted airfoil cooridinates"""
 
-    def __init__(self, filename, thickness, spars, chord, Load, n=None):
+    def __init__(self, filename, thickness, spars, chord, Load,):
         """
         :param filename: name of file with airfoil coordinates
         :param thickness: thickness of skin in [mm]
         :param spars: list of relative spar coordinates x/chord [-]
         :param chord: chord length in [m]
         :param Load: [Vx, Vy, Tz, Mx] shear postive up and right Torque positive ccw [N, N, Nm] forces applied at (0,0)
-        :param n: number of nodes for per surface (top and bottom) total number is thus 2n
         """
+
+        # Due to scipy not adhering to bounds aproximating the derivatives
+        if spars[0] < 0.0001:
+            spars[0] = 0.0001
+        elif spars[0] >= spars[1]:
+            print("spars[0] must be less than spars[1]")
+            spars[0] = spars[1] - 0.01
+
+
 
         self.G_skin = 27 * 10 ** 9  # [Pa] shear modulus
         self.Ixx = 0.
@@ -44,7 +52,8 @@ class Airfoil:
         self.create_nodes()
         self.idealise()
         self.cells = self.create_cells2()
-        self.n = n
+
+
 
     def loadpoints(self):
         """ loads airfoil coordinates from file"""
@@ -55,10 +64,12 @@ class Airfoil:
         """"
         finding the nodes closesst to the location of the spars
         and linear interpolate to get the ymin and ymax of the spars
+
         """
         spargeom = np.zeros((len(spars), 4))  # [x, ymin, ymax, indx1]
-        for i, x in enumerate(spars * self.chord):
-            indx1 = np.searchsorted(self.x[len(self.x) // 2:], x) + len(self.x) // 2
+        for i, x in enumerate(spars):
+            xscaled = x * self.chord
+            indx1 = np.searchsorted(self.x[len(self.x) // 2:], xscaled) + len(self.x) // 2
             indx2 = indx1 - 1
             indx3 = -indx1
             indx4 = indx3 - 1
@@ -66,18 +77,20 @@ class Airfoil:
             x2, y2 = self.x[indx2], self.y[indx2]
             x3, y3 = self.x[indx3], self.y[indx3]
             x4, y4 = self.x[indx4], self.y[indx4]
-            ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1 # linear interpolation to find lower location of spar
-            ymax = (y4 - y3) / (x4 - x3) * (x - x3) + y3
-            spargeom[i] = [x, ymin, ymax, indx1]
+            a1 = (y2 - y1) / (x2 - x1)
+            a2 = (y4 - y3) / (x4 - x3)
+            b1 = y1 - a1 * x1
+            b2 = y3 - a2 * x3
+
+            ymin = a1 * xscaled + b1 # linear interpolation to find lower location of spar
+            ymax = a2 * xscaled + b2
 
             # shifting the points on the airfoil to match spar position
-            self.x[indx1] = x
-            self.x[indx4] = x
+            self.x[indx1] = xscaled
+            self.x[indx4] = xscaled
             self.y[indx1] = ymin
             self.y[indx4] = ymax
-            ymin = (y2 - y1) / (x2 - x1) * (x - x1) + y1
-            ymax = (y4 - y3) / (x4 - x3) * (x - x3) + y3
-            spargeom[i] = [x, ymin, ymax, indx1]
+            spargeom[i] = [xscaled, ymin, ymax, indx1]
         return spargeom
 
     # def createcells(self):
@@ -194,7 +207,7 @@ class Airfoil:
         for i, spar in enumerate(self.spars):
             sparlist = []
             xspar = spar[0] - self.centroid[0]
-            ytop = spar[2] - self.centroid[1] - self.sparresolution
+            ytop = spar[2]  - self.centroid[1] - self.sparresolution
             ybot = spar[1] - self.centroid[1] + self.sparresolution
             number = int((ytop-ybot)//self.sparresolution + 1)
             if number < 2:
@@ -239,21 +252,23 @@ class Airfoil:
         '''
 
         for node in self.skin_nodes:
-            node.sigmaz = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x /(self.Ixx * self.Iyy - self.Ixy ** 2)
+            # node.sigmaz = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x /(self.Ixx * self.Iyy - self.Ixy ** 2)
+            node.sigmaz = self.Load[3] * node.y / self.Ixx
         for sparlist in  self.spar_nodes:
             for node in sparlist:
-                node.sigmaz = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x /(self.Ixx * self.Iyy - self.Ixy ** 2)
+                # node.sigmaz = self.Load[3] * self.Iyy * node.y - self.Load[3] * self.Ixy * node.x /(self.Ixx * self.Iyy - self.Ixy ** 2)
+                node.sigmaz = self.Load[3] * node.y / self.Ixx
         for node in self.skin_nodes:
             node.compute_A(self.thickness)
             node.compute_dqb(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
-            if node.A < 0:
-                print("skin nodes" , node.number, node.A, node.neighbors)
+            # if node.A < 0:
+            #     print("skin nodes" , node.number, node.A, node.neighbors)
         for sparlist in self.spar_nodes:
             for node in sparlist:
                 node.compute_A(self.thickness) # TODO Could vary spar thickness
                 node.compute_dqb(self.Ixx, self.Iyy, self.Ixy, self.Load[0], self.Load[1])
-                if node.A < 0:
-                    print("spar nodes", node.number, node.A, node.dqb, node.x+self.centroid[0], node.y)
+                # if node.A < 0:
+                #     print("spar nodes", node.number, node.A, node.dqb, node.x+self.centroid[0], node.y)
 
                 # print('spar nodes', node.A, node.dqb)
 
@@ -294,7 +309,10 @@ class Airfoil:
             self.Iyy += self.spar_thickness * ds**3 /12 + dA * x**2
             self.Ixy += self.spar_thickness * ds**3 /12 + dA * x * yc
 
-        pass
+        # As code originally used for arbitrary shapes Ixy computed however
+        # it is not needed for the optimisation problem
+        self.Ixy = 0 # !WARNING ONLY FOR SYMETRICAL STRUCTURES!
+
     def calculate_centriod(self):
         """
         calculate the centroid of the structural section bounded by the last spar
@@ -414,20 +432,29 @@ class Airfoil:
                 max_shear_flow = edge.qtotal
                 limiting_edge = edge
                 limiting_cell = 2
-        print(f'max_shear_flow = {max_shear_flow}')
-        print(f'limiting_edge = {limiting_edge.node1.number} - {limiting_edge.node2.number} cell = {limiting_cell}')
+
+        # print(f'max_shear_flow = {max_shear_flow}')
+        # print(f'limiting_edge = {limiting_edge.node1.number} - {limiting_edge.node2.number} cell = {limiting_cell}')
         return max_shear_flow
 
+    def structural_area(self):
+        Snew = self.perimeter.length + self.spars[0][2] - self.spars[0][1] + self.spars[1][2] - self.spars[1][1]
+        A = Snew * self.thickness
+        # print(f'spar2 pos = {self.spars[1][0]}\n'
+        #       f'Structural area = {A}\n'
+        #       f'skin lenght = {self.perimeter.length}\n'
+        #       f' spar1 lenght = {self.spars[0][2] - self.spars[0][1]}\n'
+        #       f' spar2 lenght = {self.spars[1][2] - self.spars[1][1]}\n')
+        return A
 
 
 
 
 
 if __name__ == "__main__":
-    airfoil = Airfoil("NACA012.txt", 0.3, [0.4, 0.8], 1, [0, 10, 0, 10])
-    #airfoil = Airfoil("waspairfoil.txt", 0.1, [0.3, 0.8], 1, [1, 1, 1, 1])
-    # print(f'airfoil centroid {airfoil.centroid}')
-    # print(f'airfoil Ixx {airfoil.Ixx}')
-    # print(f'airfoil Iyy {airfoil.Iyy}')
-    # print(f'airfoil Ixy {airfoil.Ixy}')
-    airfoil.find_max_shear_flow()
+    # airfoil = Airfoil("NACA012.txt", 0.01, [0.4, 0.8], 2.5, [0, 75*10**3, 200*10**3, 1])
+    airfoil = Airfoil("NACA0012-1000.txt", 0.005, [0.5, 0.9], 2.5, [0, 75 * 10 ** 3, 200 * 10 ** 3, 1])
+    print(f'Area = {airfoil.structural_area()} \n'
+          f'Stress = {airfoil.find_max_shear_flow()/airfoil.thickness/10**6} MPa\n'
+          f'Shearstrenght aluminium = 207 MPa')
+    plt.show()
