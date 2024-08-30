@@ -3,7 +3,6 @@ import importAirfoil.importAirfoil as importAirfoil
 import matplotlib.pyplot as plt
 from shapely import LinearRing, Polygon, LineString, plotting
 from nodes import Node
-from cells import Cell
 from cells2 import Cell2
 
 
@@ -23,10 +22,15 @@ class Airfoil:
 
         # Due to scipy not adhering to bounds aproximating the derivatives
         if spars[0] < 0.0001:
-            spars[0] = 0.0001
-        elif spars[0] >= spars[1]:
+            spars[0][0] = 0.0001
+        if spars[0] > spars[1]:
             print("spars[0] must be less than spars[1]")
-            spars[0] = spars[1] - 0.01
+            if spars[0] + 0.01 >= 1:
+                print("spars[0] must be less than 1")
+                spars[0] = 0.98
+                spars[1] = 0.99
+            else:
+                spars[1] = spars[0] + 0.01
 
 
 
